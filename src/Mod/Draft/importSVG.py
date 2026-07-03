@@ -520,10 +520,12 @@ class svgHandler(xml.sax.ContentHandler):
         self.make_cuts = params.get_param("svgMakeCuts")
         self.add_wire_for_invalid_face = params.get_param("svgAddWireForInvalidFace")
         self.deviation = params.get_param("svgDeviation")
+        self.handle_groups = params.get_param("svgHandleGroups")
         self.count = 0
         self.transform = None
         self.grouptransform = []
         self.groupstyles = []
+        self.currentgroup = None
         self.lastdim = None
         self.viewbox = None
         self.svgdpi = 1.0
@@ -556,6 +558,33 @@ class svgHandler(xml.sax.ContentHandler):
             if self.fill:
                 v.ShapeColor = self.fill
 
+    def __addObject(self, otype, name):
+        """Create a document object and place it in the current group."""
+        obj = self.doc.addObject(otype, name)
+        self.__placeInGroup(obj)
+        return obj
+
+    def __placeInGroup(self, obj):
+        """Place an existing document object in the current group."""
+        if obj is not None and self.currentgroup is not None:
+            self.currentgroup.addObject(obj)
+
+    def __startGroup(self, attrs):
+        """Open a document group for an SVG <g>/<a> element."""
+        grp = self.doc.addObject("App::DocumentObjectGroup", "Group")
+        grp.Label = attrs.get("inkscape:label") or attrs.get("id") or "Group"
+        self.__placeInGroup(grp)
+        self.currentgroup = grp
+
+    def __endGroup(self):
+        """Close the current group, removing it if it received no content."""
+        grp = self.currentgroup
+        if grp is None:
+            return
+        self.currentgroup = grp.getParentGroup()
+        if not grp.Group:
+            self.doc.removeObject(grp.Name)
+
     def __addShapeToDoc(self, named_shape):
         """Create a named document object from a name/shape tuple
 
@@ -576,7 +605,7 @@ class svgHandler(xml.sax.ContentHandler):
             else:
                 shape = aWires[0]
 
-        obj = self.doc.addObject("Part::Feature", name)
+        obj = self.__addObject("Part::Feature", name)
         obj.Shape = shape
         self.format(obj)
 
@@ -755,6 +784,8 @@ class svgHandler(xml.sax.ContentHandler):
             m = FreeCAD.Matrix()
         if name == "g" or name == "a":
             self.grouptransform.append(m)
+            if self.handle_groups:
+                self.__startGroup(attrs)
         elif name == "freecad:used":
             # use tag acts as g tag but has x,y attribute
             x = data.get("x", 0)
@@ -816,6 +847,7 @@ class svgHandler(xml.sax.ContentHandler):
                 p3 = data["freecad:dimpoint"]
                 p3 = Vector(float(p3[0]), -float(p3[1]), 0)
                 obj = make_dimension.make_dimension(p1, p2, p3)
+                self.__placeInGroup(obj)
                 self.applyTrans(obj)
                 self.format(obj)
                 self.lastdim = obj
@@ -908,7 +940,7 @@ class svgHandler(xml.sax.ContentHandler):
             if self.fill:
                 sh = Part.Face(sh)
             sh = self.applyTrans(sh)
-            obj = self.doc.addObject("Part::Feature", pathname)
+            obj = self.__addObject("Part::Feature", pathname)
             obj.Shape = sh
             self.format(obj)
 
@@ -920,7 +952,7 @@ class svgHandler(xml.sax.ContentHandler):
             p2 = Vector(data["x2"], -data["y2"], 0)
             sh = Part.LineSegment(p1, p2).toShape()
             sh = self.applyTrans(sh)
-            obj = self.doc.addObject("Part::Feature", pathname)
+            obj = self.__addObject("Part::Feature", pathname)
             obj.Shape = sh
             self.format(obj)
 
@@ -955,7 +987,7 @@ class svgHandler(xml.sax.ContentHandler):
                     if self.fill and sh.isClosed():
                         sh = Part.Face(sh)
                     sh = self.applyTrans(sh)
-                    obj = self.doc.addObject("Part::Feature", pathname)
+                    obj = self.__addObject("Part::Feature", pathname)
                     obj.Shape = sh
                     self.format(obj)
 
@@ -981,7 +1013,7 @@ class svgHandler(xml.sax.ContentHandler):
             if self.fill:
                 sh = Part.Face(sh)
             sh = self.applyTrans(sh)
-            obj = self.doc.addObject("Part::Feature", pathname)
+            obj = self.__addObject("Part::Feature", pathname)
             obj.Shape = sh
             self.format(obj)
 
@@ -997,7 +1029,7 @@ class svgHandler(xml.sax.ContentHandler):
                 sh = Part.Face(sh)
             sh.translate(c)
             sh = self.applyTrans(sh)
-            obj = self.doc.addObject("Part::Feature", pathname)
+            obj = self.__addObject("Part::Feature", pathname)
             obj.Shape = sh
             self.format(obj)
 
@@ -1031,7 +1063,7 @@ class svgHandler(xml.sax.ContentHandler):
         """Read characters from the given string."""
         if self.text:
             _msg("reading characters {}".format(content))
-            obj = self.doc.addObject("App::Annotation", "Text")
+            obj = self.__addObject("App::Annotation", "Text")
             # use ignore to not break import if char is not found in latin1
             obj.LabelText = content.encode("latin1", "ignore")
             vec = Vector(self.x, -self.y, 0)
@@ -1066,6 +1098,8 @@ class svgHandler(xml.sax.ContentHandler):
             self.grouptransform.pop()
             if self.groupstyles:
                 self.groupstyles.pop()
+        if name == "g" or name == "a":
+            self.__endGroup()
 
     def applyTrans(self, sh):
         """Apply transformation to the shape and return the new shape.
